@@ -20,7 +20,7 @@ class Invoice(Base):
     amount = Column(Float)
     currency = Column(String, default="USD")
     status= Column(String, default="SENT") #SENT, OVERDUE, PAID, PARTIAL_PLAN, CANCELLED
-    due_date = Column(DateTime, default=lambda: datetime.datetime.now(timezone.utc))
+    due_date = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     #Relacion con acuerdos de pago
     agrements=relationship("PaymentAgreement", back_populates="invoice")
@@ -32,7 +32,7 @@ class PaymentAgreement(Base):
     invoice_id=Column(Integer, ForeignKey("invoices.id"))
     proposed_plan=Column(String) #Ejem: "50% hoy, 50% en 30 días"
     status=Column(String, default="PENDING_HUMAN_APPROVAL") #PENDING_HUMAN_APPROVAL, APPROVED, REJECTED
-    created_at=Column(DateTime, default=lambda: datetime.datetime.now(timezone.utc))
+    created_at=Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     invoice=relationship("Invoice", back_populates="agrements")
 

@@ -1,0 +1,212 @@
+{
+  "info": {
+    "name": "PayPal Collection Agent (Sponsor Track)",
+    "_postman_id": "b6f1c2a4-7d3e-4e0a-9c1f-paypal-agent-001",
+    "description": "Colección pública: backend del agente de cobranza (Render) + endpoints de PayPal Invoicing v2 en Sandbox, y webhooks simulados.\n\n1. Configura `client_id` y `client_secret` (Sandbox).\n2. Ejecuta **Auth > Get Access Token** (guarda `access_token` automáticamente).\n3. Ejecuta las peticiones de Invoicing en orden; `invoice_id` se guarda solo.\n4. Usa **Webhooks simulados** para probar el backend con el `invoice_id` creado.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "backend_url", "value": "https://paypal-collection-agent.onrender.com" },
+    { "key": "paypal_base_url", "value": "https://api-m.sandbox.paypal.com" },
+    { "key": "client_id", "value": "" },
+    { "key": "client_secret", "value": "" },
+    { "key": "access_token", "value": "" },
+    { "key": "invoice_id", "value": "INV2-TEST-0001" },
+    { "key": "invoice_number", "value": "" },
+    { "key": "client_email", "value": "cliente@example.com" }
+  ],
+  "item": [
+    {
+      "name": "Backend (Render)",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": { "method": "GET", "url": "{{backend_url}}/" }
+        }
+      ]
+    },
+    {
+      "name": "Webhooks simulados (PayPal -> Backend)",
+      "item": [
+        {
+          "name": "INVOICING.INVOICE.PAID",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{backend_url}}/api/paypal-webhook",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"WH-SIM-PAID-001\",\n  \"event_version\": \"1.0\",\n  \"create_time\": \"{{$isoTimestamp}}\",\n  \"resource_type\": \"invoices\",\n  \"event_type\": \"INVOICING.INVOICE.PAID\",\n  \"summary\": \"An invoice was paid\",\n  \"resource\": {\n    \"id\": \"{{invoice_id}}\",\n    \"status\": \"PAID\",\n    \"amount\": { \"currency_code\": \"USD\", \"value\": \"150.00\" }\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "INVOICING.INVOICE.CANCELLED",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{backend_url}}/api/paypal-webhook",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"WH-SIM-CANCEL-001\",\n  \"event_type\": \"INVOICING.INVOICE.CANCELLED\",\n  \"resource_type\": \"invoices\",\n  \"resource\": { \"id\": \"{{invoice_id}}\", \"status\": \"CANCELLED\" }\n}"
+            }
+          }
+        },
+        {
+          "name": "INVOICING.INVOICE.REFUNDED",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{backend_url}}/api/paypal-webhook",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"WH-SIM-REFUND-001\",\n  \"event_type\": \"INVOICING.INVOICE.REFUNDED\",\n  \"resource_type\": \"invoices\",\n  \"resource\": { \"id\": \"{{invoice_id}}\", \"status\": \"REFUNDED\" }\n}"
+            }
+          }
+        },
+        {
+          "name": "Payload inválido (espera 400)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{backend_url}}/api/paypal-webhook",
+            "body": { "mode": "raw", "raw": "esto no es json" }
+          }
+        }
+      ]
+    },
+    {
+      "name": "PayPal Sandbox - Auth",
+      "item": [
+        {
+          "name": "Get Access Token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const r = pm.response.json();",
+                  "if (r.access_token) pm.collectionVariables.set('access_token', r.access_token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "basic",
+              "basic": [
+                { "key": "username", "value": "{{client_id}}" },
+                { "key": "password", "value": "{{client_secret}}" }
+              ]
+            },
+            "header": [{ "key": "Content-Type", "value": "application/x-www-form-urlencoded" }],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [{ "key": "grant_type", "value": "client_credentials" }]
+            },
+            "url": "{{paypal_base_url}}/v1/oauth2/token"
+          }
+        }
+      ]
+    },
+    {
+      "name": "PayPal Sandbox - Invoicing v2",
+      "auth": {
+        "type": "bearer",
+        "bearer": [{ "key": "token", "value": "{{access_token}}" }]
+      },
+      "item": [
+        {
+          "name": "Generate Invoice Number",
+          "event": [{ "listen": "test", "script": { "exec": ["pm.collectionVariables.set('invoice_number', pm.response.json().invoice_number);"] } }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{paypal_base_url}}/v2/invoicing/generate-next-invoice-number"
+          }
+        },
+        {
+          "name": "Create Draft Invoice",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const r = pm.response.json();",
+                  "const id = r.id || (r.href || '').split('/').pop();",
+                  "if (id) pm.collectionVariables.set('invoice_id', id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Prefer", "value": "return=representation" }
+            ],
+            "url": "{{paypal_base_url}}/v2/invoicing/invoices",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"detail\": {\n    \"invoice_number\": \"{{invoice_number}}\",\n    \"currency_code\": \"USD\",\n    \"note\": \"Gracias por su preferencia.\",\n    \"payment_term\": { \"term_type\": \"NET_30\" }\n  },\n  \"primary_recipients\": [\n    { \"billing_info\": { \"email_address\": \"{{client_email}}\" } }\n  ],\n  \"items\": [\n    {\n      \"name\": \"Servicio de consultoría\",\n      \"quantity\": \"1\",\n      \"unit_amount\": { \"currency_code\": \"USD\", \"value\": \"150.00\" }\n    }\n  ],\n  \"configuration\": {\n    \"allow_tip\": false,\n    \"partial_payment\": { \"allow_partial_payment\": true, \"minimum_amount_due\": { \"currency_code\": \"USD\", \"value\": \"50.00\" } }\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "Send Invoice",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{paypal_base_url}}/v2/invoicing/invoices/{{invoice_id}}/send",
+            "body": { "mode": "raw", "raw": "{\n  \"send_to_invoicer\": true\n}" }
+          }
+        },
+        {
+          "name": "Get Invoice",
+          "request": { "method": "GET", "url": "{{paypal_base_url}}/v2/invoicing/invoices/{{invoice_id}}" }
+        },
+        {
+          "name": "List Invoices",
+          "request": { "method": "GET", "url": "{{paypal_base_url}}/v2/invoicing/invoices?page=1&page_size=20&total_required=true" }
+        },
+        {
+          "name": "Send Reminder",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{paypal_base_url}}/v2/invoicing/invoices/{{invoice_id}}/remind",
+            "body": { "mode": "raw", "raw": "{\n  \"subject\": \"Recordatorio de pago\",\n  \"note\": \"Su factura está próxima a vencer.\",\n  \"send_to_invoicer\": true\n}" }
+          }
+        },
+        {
+          "name": "Record Partial Payment (simula pago externo)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{paypal_base_url}}/v2/invoicing/invoices/{{invoice_id}}/payments",
+            "body": { "mode": "raw", "raw": "{\n  \"method\": \"BANK_TRANSFER\",\n  \"payment_date\": \"2026-10-22\",\n  \"amount\": { \"currency_code\": \"USD\", \"value\": \"75.00\" },\n  \"note\": \"Parcialidad 1 de 2\"\n}" }
+          }
+        },
+        {
+          "name": "Cancel Invoice",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{paypal_base_url}}/v2/invoicing/invoices/{{invoice_id}}/cancel",
+            "body": { "mode": "raw", "raw": "{\n  \"subject\": \"Factura cancelada\",\n  \"note\": \"Cancelada por acuerdo.\",\n  \"send_to_invoicer\": true,\n  \"send_to_recipient\": true\n}" }
+          }
+        },
+        {
+          "name": "Simulate Webhook Event (PayPal official)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{paypal_base_url}}/v1/notifications/simulate-event",
+            "body": { "mode": "raw", "raw": "{\n  \"url\": \"{{backend_url}}/api/paypal-webhook\",\n  \"event_type\": \"INVOICING.INVOICE.PAID\",\n  \"resource_version\": \"2.0\"\n}" }
+          }
+        }
+      ]
+    }
+  ]
+}
