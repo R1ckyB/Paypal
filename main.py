@@ -7,7 +7,7 @@ import database as db_module
 import InvoicingAPI as paypal_api
 from app.config import APP_PORT, APP_TITLE, STATIC_DIR
 from app.services.invoice_service import load_invoices
-import app.pages  # noqa: F401  (registra las rutas de NiceGUI en '/')
+from app import pages  # noqa: F401  (registra las rutas de NiceGUI en '/')
 
 # Inicializa la base de datos y crea las tablas si no existen
 db_module.init_db()
@@ -71,4 +71,4 @@ async def paypal_webhook(request: Request, db: Session = Depends(db_module.get_d
         raise HTTPException(status_code=400, detail="Error procesando payload de Webhook")
 
 
-ui.run(title=APP_TITLE, port=APP_PORT)
+ui.run(title=APP_TITLE, port=APP_PORT, reload=False, show=True)
