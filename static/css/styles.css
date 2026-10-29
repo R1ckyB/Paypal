@@ -1,0 +1,9 @@
+/* Estilos globales de FacturaBot */
+body {
+  font-family: 'Inter', sans-serif;
+  background: #F8FAFC;
+}
+
+.brand {
+  font-family: 'Space Grotesk', sans-serif;
+}

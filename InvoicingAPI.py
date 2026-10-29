@@ -11,4 +11,4 @@ load_dotenv()
 CLIENT_ID = os.getenv("PAYPAL_CLIENT_ID")
 CLIENT_SECRET = os.getenv("PAYPAL_CLIENT_SECRET")
 """Guardamos la direccion principal  del servidor  de pruebas de PAYPAL """
-Base_URL = "https://api-m.sandbox.paypal.com"
+Base_URL = os.getenv("PAYPAL_BASE_URL", "https://api-m.sandbox.paypal.com")
