@@ -1,7 +1,7 @@
 [
-  {"client": "Acme Corp", "amount": 12500, "due_date": "2026-10-30", "status": "Pending"},
-  {"client": "Globex", "amount": 8200, "due_date": "2026-09-15", "status": "Overdue"},
-  {"client": "Initech", "amount": 3400, "due_date": "2026-10-01", "status": "Paid"},
-  {"client": "Umbrella SA", "amount": 15900, "due_date": "2026-11-12", "status": "Pending"},
-  {"client": "Stark Industries", "amount": 22000, "due_date": "2026-09-28", "status": "Overdue"}
+  {"id": "INV-2026-001", "client": "Globex", "amount": 8200.0, "due_date": "2026-09-15", "status": "Overdue"},
+  {"id": "INV-2026-002", "client": "Stark Industries", "amount": 22000.0, "due_date": "2026-09-28", "status": "Overdue"},
+  {"id": "INV-2026-003", "client": "Initech", "amount": 3400.0, "due_date": "2026-10-01", "status": "Paid"},
+  {"id": "INV-2026-004", "client": "Acme Corp", "amount": 12500.0, "due_date": "2026-10-30", "status": "Pending"},
+  {"id": "INV-2026-005", "client": "Umbrella SA", "amount": 15900.0, "due_date": "2026-11-12", "status": "Pending"}
 ]
