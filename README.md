@@ -8,6 +8,7 @@
 [![Sponsor: Postman](https://img.shields.io/badge/Sponsor-Postman-FF6C37)](#sponsor-tools-integration)
 
 > **Built for the [PayPal AI Hackathon: Build What's Next with PayPal and AI](https://paypalaihackathon.devpost.com/)**
+> 🌐 **Live Hosted Demo (Render):** **[https://paypal-prueba.onrender.com](https://paypal-prueba.onrender.com)**
 > *Category Alignment: Best Use of PayPal + AI • Best Use of Agentic Commerce • Best Use of AG Grid • Best Use of Render*
 
 ---
