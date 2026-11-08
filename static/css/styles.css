@@ -160,19 +160,36 @@ html, body {
   white-space: nowrap;
 }
 
-.fb-reminder-btn {
+.fb-reminder-btn,
+.fb-ag-reminder-btn {
   background: #2563EB !important;
   color: #FFFFFF !important;
   font-size: 10.5px !important;
   font-weight: 700 !important;
   padding: 6px 12px !important;
   border-radius: 5px !important;
+  border: none !important;
+  cursor: pointer;
   letter-spacing: 0.25px;
   white-space: nowrap !important;
 }
 
-.fb-reminder-btn:hover {
+.fb-reminder-btn:hover,
+.fb-ag-reminder-btn:hover {
   background: #1D4ED8 !important;
+}
+
+/* Estilos para AG Grid (Sponsor Track) en Tema Oscuro */
+.fb-aggrid {
+  --ag-background-color: #0E131D !important;
+  --ag-header-background-color: #151C28 !important;
+  --ag-odd-row-background-color: #0E131D !important;
+  --ag-row-hover-color: #141C2B !important;
+  --ag-border-color: #1E293B !important;
+  --ag-foreground-color: #F1F5F9 !important;
+  --ag-header-foreground-color: #CBD5E1 !important;
+  --ag-font-family: 'Inter', sans-serif !important;
+  --ag-font-size: 13px !important;
 }
 
 /* Tarjeta Human-In-The-Loop */

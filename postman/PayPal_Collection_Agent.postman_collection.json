@@ -1,32 +1,80 @@
 {
   "info": {
-    "name": "PayPal Collection Agent (Sponsor Track)",
+    "name": "FacturaBot - PayPal AI Collection Agent (Hackathon Collection)",
     "_postman_id": "b6f1c2a4-7d3e-4e0a-9c1f-paypal-agent-001",
-    "description": "Colección pública: backend del agente de cobranza (Render) + endpoints de PayPal Invoicing v2 en Sandbox, y webhooks simulados.\n\n1. Configura `client_id` y `client_secret` (Sandbox).\n2. Ejecuta **Auth > Get Access Token** (guarda `access_token` automáticamente).\n3. Ejecuta las peticiones de Invoicing en orden; `invoice_id` se guarda solo.\n4. Usa **Webhooks simulados** para probar el backend con el `invoice_id` creado.",
+    "description": "Public Postman Collection for FacturaBot (PayPal AI Hackathon).\n\nIncludes:\n1. FacturaBot Backend & AI Agent REST Endpoints (`/api/health`, `/api/invoices`, `/api/agent/chat`, `/api/invoices/:id/remind`, `/api/invoices/:id/approve-plan`, `/api/invoices/:id/pay`).\n2. Simulated PayPal Webhooks (`/api/paypal-webhook`).\n3. Official PayPal Sandbox OAuth2 & Invoicing v2 API (`generate-next-invoice-number`, `invoices`, `send`, `remind`, `payments`, `cancel`).",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
-    { "key": "backend_url", "value": "https://paypal-collection-agent.onrender.com" },
+    { "key": "backend_url", "value": "http://localhost:8080" },
     { "key": "paypal_base_url", "value": "https://api-m.sandbox.paypal.com" },
     { "key": "client_id", "value": "" },
     { "key": "client_secret", "value": "" },
     { "key": "access_token", "value": "" },
-    { "key": "invoice_id", "value": "INV2-TEST-0001" },
+    { "key": "invoice_id", "value": "INV-2026-001" },
     { "key": "invoice_number", "value": "" },
-    { "key": "client_email", "value": "cliente@example.com" }
+    { "key": "client_email", "value": "pagos@globex.com" }
   ],
   "item": [
     {
-      "name": "Backend (Render)",
+      "name": "1. FacturaBot Backend & AI Agent (Render / Local)",
       "item": [
         {
-          "name": "Health Check",
-          "request": { "method": "GET", "url": "{{backend_url}}/" }
+          "name": "Health Check & AI Engine Status",
+          "request": { "method": "GET", "url": "{{backend_url}}/api/health" }
+        },
+        {
+          "name": "List Invoices (SQLite + PayPal Sync)",
+          "request": { "method": "GET", "url": "{{backend_url}}/api/invoices" }
+        },
+        {
+          "name": "AI Agent Chat - Request Installment Plan (Triggers HITL)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{backend_url}}/api/agent/chat",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"client\": \"Globex\",\n  \"message\": \"We cannot pay the full amount right now, can we split it into 2 installments?\",\n  \"amount\": 8200.0,\n  \"lang\": \"en\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Human-In-The-Loop - Approve Partial Plan in PayPal",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{backend_url}}/api/invoices/{{invoice_id}}/approve-plan",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"payments\": 2\n}"
+            }
+          }
+        },
+        {
+          "name": "Trigger PayPal Invoice Reminder",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{backend_url}}/api/invoices/{{invoice_id}}/remind"
+          }
+        },
+        {
+          "name": "Record PayPal Invoice Payment",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{backend_url}}/api/invoices/{{invoice_id}}/pay",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": 8200.0\n}"
+            }
+          }
         }
       ]
     },
     {
-      "name": "Webhooks simulados (PayPal -> Backend)",
+      "name": "2. Simulated Webhooks (PayPal -> FacturaBot Backend)",
       "item": [
         {
           "name": "INVOICING.INVOICE.PAID",
@@ -36,7 +84,7 @@
             "url": "{{backend_url}}/api/paypal-webhook",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"id\": \"WH-SIM-PAID-001\",\n  \"event_version\": \"1.0\",\n  \"create_time\": \"{{$isoTimestamp}}\",\n  \"resource_type\": \"invoices\",\n  \"event_type\": \"INVOICING.INVOICE.PAID\",\n  \"summary\": \"An invoice was paid\",\n  \"resource\": {\n    \"id\": \"{{invoice_id}}\",\n    \"status\": \"PAID\",\n    \"amount\": { \"currency_code\": \"USD\", \"value\": \"150.00\" }\n  }\n}"
+              "raw": "{\n  \"id\": \"WH-SIM-PAID-001\",\n  \"event_version\": \"1.0\",\n  \"create_time\": \"{{$isoTimestamp}}\",\n  \"resource_type\": \"invoices\",\n  \"event_type\": \"INVOICING.INVOICE.PAID\",\n  \"summary\": \"An invoice was paid\",\n  \"resource\": {\n    \"id\": \"{{invoice_id}}\",\n    \"status\": \"PAID\",\n    \"amount\": { \"currency_code\": \"USD\", \"value\": \"8200.00\" }\n  }\n}"
             }
           }
         },
@@ -65,7 +113,7 @@
           }
         },
         {
-          "name": "Payload inválido (espera 400)",
+          "name": "Invalid Payload (Expects HTTP 400)",
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
@@ -76,7 +124,7 @@
       ]
     },
     {
-      "name": "PayPal Sandbox - Auth",
+      "name": "3. PayPal Sandbox - OAuth 2.0",
       "item": [
         {
           "name": "Get Access Token",
@@ -111,7 +159,7 @@
       ]
     },
     {
-      "name": "PayPal Sandbox - Invoicing v2",
+      "name": "4. PayPal Sandbox - Invoicing v2 API",
       "auth": {
         "type": "bearer",
         "bearer": [{ "key": "token", "value": "{{access_token}}" }]
@@ -127,7 +175,7 @@
           }
         },
         {
-          "name": "Create Draft Invoice",
+          "name": "Create Draft Invoice (with Partial Payment Enabled)",
           "event": [
             {
               "listen": "test",
@@ -149,7 +197,7 @@
             "url": "{{paypal_base_url}}/v2/invoicing/invoices",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"detail\": {\n    \"invoice_number\": \"{{invoice_number}}\",\n    \"currency_code\": \"USD\",\n    \"note\": \"Gracias por su preferencia.\",\n    \"payment_term\": { \"term_type\": \"NET_30\" }\n  },\n  \"primary_recipients\": [\n    { \"billing_info\": { \"email_address\": \"{{client_email}}\" } }\n  ],\n  \"items\": [\n    {\n      \"name\": \"Servicio de consultoría\",\n      \"quantity\": \"1\",\n      \"unit_amount\": { \"currency_code\": \"USD\", \"value\": \"150.00\" }\n    }\n  ],\n  \"configuration\": {\n    \"allow_tip\": false,\n    \"partial_payment\": { \"allow_partial_payment\": true, \"minimum_amount_due\": { \"currency_code\": \"USD\", \"value\": \"50.00\" } }\n  }\n}"
+              "raw": "{\n  \"detail\": {\n    \"invoice_number\": \"{{invoice_number}}\",\n    \"currency_code\": \"USD\",\n    \"note\": \"Managed by FacturaBot AI - Partial Payment Plan Enabled.\",\n    \"payment_term\": { \"term_type\": \"NET_30\" }\n  },\n  \"primary_recipients\": [\n    { \"billing_info\": { \"email_address\": \"{{client_email}}\" } }\n  ],\n  \"items\": [\n    {\n      \"name\": \"Enterprise Consulting Services\",\n      \"quantity\": \"1\",\n      \"unit_amount\": { \"currency_code\": \"USD\", \"value\": \"8200.00\" }\n    }\n  ],\n  \"configuration\": {\n    \"allow_tip\": false,\n    \"partial_payment\": { \"allow_partial_payment\": true, \"minimum_amount_due\": { \"currency_code\": \"USD\", \"value\": \"4100.00\" } }\n  }\n}"
             }
           }
         },
@@ -176,16 +224,16 @@
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "url": "{{paypal_base_url}}/v2/invoicing/invoices/{{invoice_id}}/remind",
-            "body": { "mode": "raw", "raw": "{\n  \"subject\": \"Recordatorio de pago\",\n  \"note\": \"Su factura está próxima a vencer.\",\n  \"send_to_invoicer\": true\n}" }
+            "body": { "mode": "raw", "raw": "{\n  \"subject\": \"Payment Reminder\",\n  \"note\": \"Your invoice is due soon.\",\n  \"send_to_invoicer\": true\n}" }
           }
         },
         {
-          "name": "Record Partial Payment (simula pago externo)",
+          "name": "Record Partial Payment",
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "url": "{{paypal_base_url}}/v2/invoicing/invoices/{{invoice_id}}/payments",
-            "body": { "mode": "raw", "raw": "{\n  \"method\": \"BANK_TRANSFER\",\n  \"payment_date\": \"2026-10-22\",\n  \"amount\": { \"currency_code\": \"USD\", \"value\": \"75.00\" },\n  \"note\": \"Parcialidad 1 de 2\"\n}" }
+            "body": { "mode": "raw", "raw": "{\n  \"method\": \"PAYPAL\",\n  \"payment_date\": \"2026-11-07\",\n  \"amount\": { \"currency_code\": \"USD\", \"value\": \"4100.00\" },\n  \"note\": \"Installment 1 of 2\"\n}" }
           }
         },
         {
@@ -194,16 +242,7 @@
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "url": "{{paypal_base_url}}/v2/invoicing/invoices/{{invoice_id}}/cancel",
-            "body": { "mode": "raw", "raw": "{\n  \"subject\": \"Factura cancelada\",\n  \"note\": \"Cancelada por acuerdo.\",\n  \"send_to_invoicer\": true,\n  \"send_to_recipient\": true\n}" }
-          }
-        },
-        {
-          "name": "Simulate Webhook Event (PayPal official)",
-          "request": {
-            "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "url": "{{paypal_base_url}}/v1/notifications/simulate-event",
-            "body": { "mode": "raw", "raw": "{\n  \"url\": \"{{backend_url}}/api/paypal-webhook\",\n  \"event_type\": \"INVOICING.INVOICE.PAID\",\n  \"resource_version\": \"2.0\"\n}" }
+            "body": { "mode": "raw", "raw": "{\n  \"subject\": \"Invoice Cancelled\",\n  \"note\": \"Cancelled by agreement.\",\n  \"send_to_invoicer\": true,\n  \"send_to_recipient\": true\n}" }
           }
         }
       ]
