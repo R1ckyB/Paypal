@@ -19,6 +19,19 @@ STATUS_MAP = {
 }
 
 
+def reset_demo_db() -> list[dict]:
+    """Restaura las facturas y acuerdos de pago en SQLite al estado inicial de demostración."""
+    db = db_module.SessionLocal()
+    try:
+        db.query(db_module.PaymentAgreement).delete()
+        db.query(db_module.Invoice).delete()
+        db.commit()
+    finally:
+        db.close()
+    db_module.init_db()
+    return load_invoices()
+
+
 def load_invoices():
     """Carga las facturas desde la base de datos SQLite (o inicializa desde JSON si está vacía)."""
     db_module.init_db()

@@ -5,6 +5,7 @@ from app.components import app_header, invoice_grid, set_status, ClientInbox
 from app.services.invoice_service import (
     save_payment_agreement_in_db,
     approve_partial_plan_in_paypal,
+    reset_demo_db,
 )
 
 
@@ -12,7 +13,6 @@ from app.services.invoice_service import (
 def dashboard_page():
     ui.colors(**COLORS)
 
-    # Estado reactivo de idioma ('es' por defecto para mantener diseño original, alternable a 'en' para jueces)
     lang_state = {'lang': 'es'}
 
     # Estado reactivo para Human-In-The-Loop (precargado con la propuesta de Globex)
@@ -67,13 +67,35 @@ def dashboard_page():
             color='primary',
         )
 
+    def handle_reset_demo():
+        new_rows = reset_demo_db()
+        if grid_ref['grid']:
+            grid_ref['grid'].rows = new_rows
+            grid_ref['grid'].options['rowData'] = new_rows
+            grid_ref['grid'].selected_client = 'Globex'
+            grid_ref['grid'].update()
+        if inbox_ref['inbox']:
+            inbox_ref['inbox'].reset_histories()
+        hitl_state['active'] = True
+        hitl_state['client'] = 'Globex'
+        hitl_state['payments'] = 2
+        hitl_state['amount'] = 8200.0
+        hitl_state['resolved_msg'] = None
+        refresh_hitl()
+        refresh_kpis()
+        ui.notify(
+            'Demo data reset to initial state'
+            if lang_state['lang'] == 'en'
+            else 'Datos de demostración restaurados al estado inicial',
+            color='primary',
+        )
+
     header_refs['refs'] = app_header(
         lang=lang_state['lang'],
         on_toggle_lang=toggle_lang,
         on_toggle_grid_mode=toggle_grid,
+        on_reset_demo=handle_reset_demo,
     )
-    if header_refs['refs'] and header_refs['refs'].get('grid_btn'):
-        header_refs['refs']['grid_btn'].text = 'AG Grid: View'
 
     def compute_totals():
         grid = grid_ref['grid']
@@ -82,7 +104,6 @@ def dashboard_page():
         rows = grid.options['rowData']
         recovered = sum(float(r['amount']) for r in rows if r['status'] == 'Paid')
         unpaid = sum(float(r['amount']) for r in rows if r['status'] != 'Paid')
-        # Si hay una factura retenida en revisión Human-In-The-Loop aún sin resolver, se descuenta de Pendiente operativo
         if hitl_state['active']:
             for r in rows:
                 if r['client'] == hitl_state['client'] and r['status'] == 'Overdue':
@@ -126,15 +147,19 @@ def dashboard_page():
         amount = hitl_state['amount']
         hitl_state['active'] = False
 
-        # Ejecuta la aprobación real/híbrida en PayPal Invoicing v2 API (allow_partial_payment=True)
         pp_res = approve_partial_plan_in_paypal(client, payments=payments)
         installment = amount / max(payments, 1)
+        new_pp_id = pp_res.get('paypal_invoice_id')
 
         hitl_state['resolved_msg'] = (
             f'✅ {payments}-payment plan for {client} approved in PayPal (${installment:,.2f}/payment).'
             if is_en
             else f'✅ Plan de {payments} pagos para {client} aprobado en PayPal (${installment:,.2f}/pago).'
         )
+        if grid_ref['grid'] and new_pp_id:
+            for r in grid_ref['grid'].options['rowData']:
+                if r['client'] == client:
+                    r['id'] = new_pp_id
         set_status(grid_ref['grid'], client, 'Partial Plan')
         inbox_ref['inbox'].notify_plan_approved(client, payments, amount, paypal_info=pp_res)
         refresh_hitl()
@@ -231,7 +256,6 @@ def dashboard_page():
     with ui.row().classes('w-full no-wrap fb-main-layout'):
         # Panel Izquierdo: Dashboard de Facturas
         with ui.column().classes('h-full justify-between no-wrap fb-left-panel'):
-            # Título
             dash_title = ui.label('Dashboard de Facturas').classes(
                 'text-white text-base font-bold tracking-tight mb-1'
             )

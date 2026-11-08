@@ -1,3 +1,4 @@
+import asyncio
 from nicegui import ui
 
 from app.services.agent_service import agent_reply
@@ -5,13 +6,14 @@ from app.services.invoice_service import trigger_paypal_reminder, process_paypal
 
 
 class ClientInbox:
-    """Bandeja del cliente (simulada) con burbujas estilo WhatsApp/Email y botón de pago PayPal."""
+    """Bandeja del cliente (simulada) con burbujas estilo WhatsApp/Email, razonamiento IA en vivo y botón PayPal."""
 
     def __init__(self, on_status_change=None, on_hitl_proposal=None, on_paypal_pay=None, lang: str = 'es'):
         self.on_status_change = on_status_change
         self.on_hitl_proposal = on_hitl_proposal
         self.on_paypal_pay = on_paypal_pay
         self.lang = lang
+        self.is_thinking = False
 
         self.current_client = 'Globex'
         self.current_amount = 8200.0
@@ -19,22 +21,7 @@ class ClientInbox:
         self.current_due_date = '2026-09-15'
         self.view_mode = 'chat'  # 'chat' o 'email'
 
-        # Historial por cliente (precargado para Globex exactamente como en el diseño)
-        self.histories = {
-            'Globex': [
-                {
-                    'sender': 'bot',
-                    'text': 'Hola Globex, recordamos que tienes una factura pendiente. ¿Te gustaría acordar un plan de pagos?',
-                    'show_paypal': True,
-                    'paypal_label': '[ Pagar con PayPal ]',
-                    'amount': 8200.0,
-                },
-                {
-                    'sender': 'client',
-                    'text': 'No tengo el total ahora, ¿puedo pagar en partes?',
-                },
-            ]
-        }
+        self.histories = self._initial_histories()
 
         with ui.column().classes('w-full h-full justify-between no-wrap fb-inbox-panel') as self.panel:
             # Header de la bandeja
@@ -64,6 +51,31 @@ class ClientInbox:
                     'fb-send-btn'
                 )
 
+        self._render_messages()
+
+    def _initial_histories(self) -> dict:
+        return {
+            'Globex': [
+                {
+                    'sender': 'bot',
+                    'text': 'Hola Globex, recordamos que tienes una factura pendiente. ¿Te gustaría acordar un plan de pagos?',
+                    'show_paypal': True,
+                    'paypal_label': '[ Pagar con PayPal ]',
+                    'amount': 8200.0,
+                },
+                {
+                    'sender': 'client',
+                    'text': 'No tengo el total ahora, ¿puedo pagar en partes?',
+                },
+            ]
+        }
+
+    def reset_histories(self):
+        self.current_client = 'Globex'
+        self.current_amount = 8200.0
+        self.current_invoice_id = 'INV-2026-001'
+        self.current_due_date = '2026-09-15'
+        self.histories = self._initial_histories()
         self._render_messages()
 
     def set_language(self, lang: str):
@@ -131,8 +143,9 @@ class ClientInbox:
         if invoice_id:
             self.current_invoice_id = invoice_id
 
-        # Invocar API de PayPal Invoicing v2 (/v2/invoicing/invoices/{id}/remind)
         pp_res = trigger_paypal_reminder(self.current_invoice_id or client)
+        if pp_res.get('paypal_invoice_id'):
+            self.current_invoice_id = pp_res['paypal_invoice_id']
         is_en = self.lang == 'en'
         pp_btn = '[ Pay with PayPal ]' if is_en else '[ Pagar con PayPal ]'
 
@@ -145,7 +158,7 @@ class ClientInbox:
                     f'(${float(amount):,.2f} USD, due: {due_date}). Would you like to set up a payment plan?'
                     if is_en
                     else f'Hola {client}, recordamos que tienes una factura pendiente '
-                    f'por ${float(amount):,.2f} (vencimiento: {due_date}). '
+                    f'({self.current_invoice_id} por ${float(amount):,.2f}, vencimiento: {due_date}). '
                     f'¿Te gustaría acordar un plan de pagos?'
                 ),
                 'show_paypal': True,
@@ -166,6 +179,8 @@ class ClientInbox:
     def notify_plan_approved(self, client: str, payments: int, total_amount: float, paypal_info: dict | None = None):
         """Notifica en el chat del cliente que su plan de pagos fue aprobado en PayPal."""
         self.current_client = client
+        if paypal_info and paypal_info.get('paypal_invoice_id'):
+            self.current_invoice_id = paypal_info['paypal_invoice_id']
         installment = total_amount / max(payments, 1)
         is_en = self.lang == 'en'
         pp_btn = f'[ Pay 1st Installment (${installment:,.2f}) with PayPal ]' if is_en else '[ Pagar con PayPal ]'
@@ -176,10 +191,10 @@ class ClientInbox:
                 'text': (
                     f'Great news, {client}! Your {payments}-installment payment plan of '
                     f'${installment:,.2f} USD per payment has been approved in PayPal Invoicing '
-                    f'(allow_partial_payment=true). You can complete your payment below:'
+                    f'(Invoice {self.current_invoice_id}). You can complete your payment below:'
                     if is_en
                     else f'¡Buenas noticias, {client}! Tu plan de {payments} pagos de '
-                    f'${installment:,.2f} USD fue aprobado en PayPal. '
+                    f'${installment:,.2f} USD fue aprobado en PayPal (Factura {self.current_invoice_id}). '
                     f'Puedes realizar tu pago a continuación:'
                 ),
                 'show_paypal': True,
@@ -249,32 +264,43 @@ class ClientInbox:
                 self.on_status_change(client, 'Paid')
         self._render_messages()
 
-    def reply(self):
+    async def reply(self):
         text = (self.box.value or '').strip()
-        if not text:
+        if not text or self.is_thinking:
             return
         client = self.current_client or 'Globex'
         history = self.histories.setdefault(client, [])
         history.append({'sender': 'client', 'text': text})
+        self.box.value = ''
 
-        res = agent_reply(
+        # Mostrar burbuja de razonamiento de IA en tiempo real mientras Gemini piensa
+        self.is_thinking = True
+        self._render_messages()
+
+        res = await asyncio.to_thread(
+            agent_reply,
             text,
             client=client,
             amount=self.current_amount,
             lang=self.lang,
-            history=history,
+            due_date=self.current_due_date,
+            invoice_id=self.current_invoice_id,
+            history=history[:-1],
         )
+        self.is_thinking = False
+
         is_en = self.lang == 'en'
         history.append(
             {
                 'sender': 'bot',
                 'text': res['message'],
+                'reasoning': res.get('reasoning', ''),
+                'ai_provider': res.get('ai_provider', ''),
                 'show_paypal': res.get('show_paypal_btn', False),
                 'paypal_label': '[ Pay with PayPal ]' if is_en else '[ Pagar con PayPal ]',
                 'amount': res.get('paypal_amount', self.current_amount),
             }
         )
-        self.box.value = ''
 
         with self.panel:
             if res.get('hitl_proposal') and self.on_hitl_proposal:
@@ -292,7 +318,6 @@ class ClientInbox:
 
         with self.chat:
             if self.view_mode == 'email':
-                # Vista previa de correo formal con plantilla de PayPal Invoicing
                 with ui.column().classes('w-full fb-email-card p-4 gap-3'):
                     from_lbl = 'From' if is_en else 'De'
                     to_lbl = 'To' if is_en else 'Para'
@@ -323,12 +348,18 @@ class ClientInbox:
                             ).props('unelevated no-caps').classes('w-full fb-paypal-btn')
                 return
 
-            # Vista predeterminada (idéntica a la imagen de referencia)
+            # Vista predeterminada (Chat con razonamiento IA visible)
             for msg in history:
                 if msg['sender'] == 'bot':
                     with ui.row().classes('w-full items-end gap-2.5 no-wrap'):
                         ui.html('<div class="fb-bot-chat-icon">🤖</div>')
-                        with ui.column().classes('fb-bot-bubble gap-3'):
+                        with ui.column().classes('fb-bot-bubble gap-2'):
+                            if msg.get('reasoning'):
+                                ui.html(
+                                    f'<div style="font-size:11px;color:#60A5FA;background:rgba(37,99,235,0.12);'
+                                    f'border-left:2px solid #3B82F6;padding:4px 8px;border-radius:4px;">'
+                                    f'✨ <b>Gemini AI:</b> {msg["reasoning"]}</div>'
+                                )
                             ui.label(msg['text']).classes('text-slate-200 text-sm leading-relaxed')
                             if msg.get('show_paypal'):
                                 amt = float(msg.get('amount') or self.current_amount)
@@ -340,3 +371,16 @@ class ClientInbox:
                     with ui.row().classes('w-full justify-end no-wrap'):
                         with ui.column().classes('fb-client-bubble'):
                             ui.label(msg['text']).classes('text-slate-200 text-sm leading-relaxed')
+
+            # Indicador animado cuando Gemini está pensando
+            if self.is_thinking:
+                think_txt = (
+                    f'Gemini AI analyzing {self.current_client} invoice & credit policy...'
+                    if is_en
+                    else f'Gemini AI analizando factura de {self.current_client} y políticas de crédito...'
+                )
+                with ui.row().classes('w-full items-center gap-2.5 no-wrap'):
+                    ui.html('<div class="fb-bot-chat-icon">🧠</div>')
+                    with ui.row().classes('fb-bot-bubble items-center gap-2.5 no-wrap'):
+                        ui.spinner('dots', size='sm', color='primary')
+                        ui.label(think_txt).classes('text-blue-400 text-xs italic')

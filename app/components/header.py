@@ -5,8 +5,8 @@ import InvoicingAPI as paypal_api
 from app.services.agent_service import get_active_ai_provider
 
 
-def app_header(lang: str = 'es', on_toggle_lang=None, on_toggle_grid_mode=None):
-    """Header con el branding de FacturaBot, controles de idioma/AG Grid y sello Powered by PayPal."""
+def app_header(lang: str = 'es', on_toggle_lang=None, on_toggle_grid_mode=None, on_reset_demo=None):
+    """Header con el branding de FacturaBot, controles de idioma/AG Grid/Reset y sello Powered by PayPal."""
     subtitle_txt = (
         'Intelligent AI Collections (PayPal Invoicing v2 API)'
         if lang == 'en'
@@ -30,18 +30,23 @@ def app_header(lang: str = 'es', on_toggle_lang=None, on_toggle_grid_mode=None):
             ui.html(
                 f'<span style="font-size:10.5px;padding:2px 8px;border-radius:999px;'
                 f'background:rgba(16,185,129,0.14);color:#34D399;border:1px solid rgba(16,185,129,0.3);'
-                f'font-weight:600;">{pp_mode}</span>'
+                f'font-weight:600;">{pp_mode} • Gemini AI</span>'
             )
 
         # Leyenda derecha + Controles + Powered by PayPal
-        with ui.row().classes('items-center gap-3 no-wrap'):
+        with ui.row().classes('items-center gap-2.5 no-wrap'):
             subtitle_label = ui.label(subtitle_txt).classes(
                 'text-slate-300 text-xs sm:text-sm font-medium'
             )
 
+            if on_reset_demo:
+                ui.button('↻ Reset', on_click=on_reset_demo).props('unelevated dense no-caps').classes(
+                    'fb-view-toggle-btn'
+                ).tooltip('Restaurar facturas de demostración al estado inicial')
+
             if on_toggle_grid_mode:
                 grid_btn = (
-                    ui.button('AG Grid: ON', on_click=on_toggle_grid_mode)
+                    ui.button('AG Grid: View', on_click=on_toggle_grid_mode)
                     .props('unelevated dense no-caps')
                     .classes('fb-view-toggle-btn')
                     .tooltip('Alternar entre AG Grid (Sponsor) y Tabla Clásica')

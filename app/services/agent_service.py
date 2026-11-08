@@ -1,9 +1,9 @@
 """Servicio de Agente de IA para Cobranza B2B con PayPal Invoicing y Human-In-The-Loop.
 
 Soporta:
-1. Google Gemini API (Structured JSON Output) si GEMINI_API_KEY está configurada.
-2. OpenAI / Compatible API (Structured JSON Output) si OPENAI_API_KEY está configurada.
-3. Motor NLU determinista bilingüe (ES/EN) como fallback instantáneo sin latencia.
+1. Google Gemini API (gemini-3.5-flash / gemini-3.5-flash-lite) con Structured JSON Output.
+2. OpenAI / Compatible API con Structured JSON Output.
+3. Motor NLU determinista bilingüe (ES/EN) como fallback en caso de falta de red.
 """
 import json
 import re
@@ -41,11 +41,11 @@ def _detect_language(text: str, default_lang: str = 'es') -> str:
     en_markers = (
         'split', 'installment', 'partial', 'parts', 'paid', 'pay ', 'payment',
         'cannot', "can't", 'balance', 'how much', 'invoice', 'next week',
-        'tomorrow', 'friday', 'monday', 'please', 'help', 'total now',
+        'tomorrow', 'friday', 'monday', 'please', 'help', 'total now', 'hello', 'hi ',
     )
     es_markers = (
         'parte', 'parcial', 'cuota', 'pagu', 'pagado', 'cuánto', 'cuanto',
-        'mañana', 'semana', 'factura', 'puedo', 'tengo', 'abono', 'mitad',
+        'mañana', 'semana', 'factura', 'puedo', 'tengo', 'abono', 'mitad', 'hola', 'qué', 'que',
     )
     en_hits = sum(1 for w in en_markers if w in t)
     es_hits = sum(1 for w in es_markers if w in t)
@@ -69,7 +69,7 @@ def _extract_installments(text: str) -> int:
     for word, val in word_map.items():
         if re.search(rf'\b{word}\b', t):
             return val
-    match = re.search(r'\b([2-6])\s*(?:pagos?|partes?|cuotas?|payments?|installments?|parts?)\b', t)
+    match = re.search(r'\b([2-6])\s*(?:pagos?|partes?|cuotas?|payments?|installments?|parts?|meses|quincenas)\b', t)
     if match:
         return int(match.group(1))
     if '3' in t:
@@ -84,9 +84,11 @@ def _call_llm_agent(
     client: str,
     amount: float,
     lang: str,
+    due_date: str = '',
+    invoice_id: str = '',
     history: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
-    """Invoca a Gemini u OpenAI para analizar la intención del cliente y generar la acción de cobranza."""
+    """Invoca a Gemini 3.5 Flash (o fallback 3.5-flash-lite / OpenAI) para razonar y negociar con el cliente."""
     has_gemini = bool(GEMINI_API_KEY and GEMINI_API_KEY not in PLACEHOLDER_KEYS)
     has_openai = bool(OPENAI_API_KEY and OPENAI_API_KEY not in PLACEHOLDER_KEYS)
     if not has_gemini and not has_openai:
@@ -95,44 +97,72 @@ def _call_llm_agent(
     lang_name = 'English' if lang == 'en' else 'Spanish'
     recent_context = ''
     if history:
-        turns = history[-4:]
+        turns = history[-6:]
         recent_context = '\n'.join(f"- {m.get('sender', 'user')}: {m.get('text', '')}" for m in turns)
 
     system_prompt = (
-        "You are FacturaBot, an autonomous AI Accounts Receivable & Collections Agent integrated with "
-        "PayPal Invoicing v2 API and a Human-In-The-Loop (HITL) credit approval workflow.\n"
-        f"Client Name: {client}\n"
-        f"Invoice Outstanding Balance: ${amount:,.2f} USD\n"
-        f"Respond in {lang_name}.\n\n"
-        "Classify the client's message and return ONLY a valid JSON object with these exact keys:\n"
-        "- \"intent\": one of [\"INSTALLMENT_REQUEST\", \"PAYMENT_CONFIRMATION\", \"PROMISE_TO_PAY\", \"BALANCE_INQUIRY\", \"GENERAL\"]\n"
-        "- \"message\": concise, professional, empathetic reply to the client (2-3 sentences max).\n"
-        "- \"installments\": integer between 2 and 6 if intent is INSTALLMENT_REQUEST, else 0.\n"
-        "- \"trigger_hitl\": boolean (true ONLY if the client asks to split/pay in parts/installments).\n"
-        "- \"mark_paid\": boolean (true ONLY if the client confirms they already completed full payment).\n"
-        "- \"show_paypal_btn\": boolean (true if the client should see the PayPal checkout button right now; false if waiting for HITL approval or already paid).\n"
+        "You are FacturaBot, an intelligent, empathetic B2B Accounts Receivable & Collections AI Agent "
+        "powered by PayPal Invoicing v2 API and a Human-In-The-Loop (HITL) supervisor credit workflow.\n"
+        f"- Client Company: {client}\n"
+        f"- Invoice ID: {invoice_id or 'INV-2026'}\n"
+        f"- Invoice Due Date: {due_date or '2026-09-30'}\n"
+        f"- Outstanding Balance: ${amount:,.2f} USD\n"
+        f"- Preferred Language: {lang_name} (always reply in the language the client used in their last message).\n\n"
+        "BEHAVIOR GUIDELINES:\n"
+        "1. Think carefully about what the client is actually saying or asking. Respond naturally and specifically to their situation (never sound like a rigid template).\n"
+        "2. If the client asks to split the payment, pay in installments/parts, or says they only have part of the money right now:\n"
+        "   - Calculate the exact installment amount ($amount / installments).\n"
+        "   - Set `trigger_hitl: true` and `installments` to the number of payments requested (2 to 6, default 2).\n"
+        "   - Explain warmly that you have structured the plan and sent it to the Human-In-The-Loop supervisor to enable `allow_partial_payment` on their PayPal Invoice.\n"
+        "   - Set `show_paypal_btn: false` while waiting for human approval.\n"
+        "3. If the client confirms they already paid or sent the transfer:\n"
+        "   - Set `mark_paid: true` and `show_paypal_btn: false`, and thank them warmly.\n"
+        "4. If the client promises to pay on a specific date, asks a question about the invoice, asks for a discount, or explains a delay:\n"
+        "   - Address their specific point empathetically, mention the invoice details ($amount USD), and offer either immediate PayPal checkout (`show_paypal_btn: true`) or the option to request an installment plan.\n\n"
+        "Return ONLY a valid JSON object with these exact keys:\n"
+        "{\n"
+        '  "intent": "INSTALLMENT_REQUEST" | "PAYMENT_CONFIRMATION" | "PROMISE_TO_PAY" | "BALANCE_INQUIRY" | "NEGOTIATION_OR_QUESTION",\n'
+        '  "reasoning": "1 brief sentence explaining your financial/collections analysis of the client message (in the same language)",\n'
+        '  "message": "Your natural, personalized reply to the client (2-3 sentences)",\n'
+        '  "installments": 2,\n'
+        '  "trigger_hitl": false,\n'
+        '  "mark_paid": false,\n'
+        '  "show_paypal_btn": true\n'
+        "}"
     )
-    user_prompt = f"Recent conversation:\n{recent_context}\n\nClient new message: \"{text}\""
+    user_prompt = f"Conversation history:\n{recent_context}\n\nClient's latest message: \"{text}\""
 
-    try:
-        if has_gemini:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
-            payload = {
-                "systemInstruction": {"parts": [{"text": system_prompt}]},
-                "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
-                "generationConfig": {
-                    "temperature": 0.2,
-                    "responseMimeType": "application/json",
-                },
-            }
-            resp = requests.post(url, json=payload, timeout=10)
-            resp.raise_for_status()
-            raw_text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-            parsed = json.loads(raw_text)
-            parsed["_provider"] = f"gemini:{GEMINI_MODEL}"
-            return parsed
+    if has_gemini:
+        # Probar el modelo configurado y respaldos rápidos de la familia Gemini 3.x
+        candidate_models = [GEMINI_MODEL, 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite']
+        seen = set()
+        for model_name in candidate_models:
+            if not model_name or model_name in seen:
+                continue
+            seen.add(model_name)
+            try:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
+                payload = {
+                    "systemInstruction": {"parts": [{"text": system_prompt}]},
+                    "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+                    "generationConfig": {
+                        "temperature": 0.35,
+                        "responseMimeType": "application/json",
+                    },
+                }
+                resp = requests.post(url, json=payload, timeout=12)
+                if not resp.ok:
+                    continue
+                raw_text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+                parsed = json.loads(raw_text)
+                parsed["_provider"] = f"Google Gemini ({model_name})"
+                return parsed
+            except Exception as exc:
+                print(f"[FacturaBot AI] Intento con {model_name} falló: {exc}")
+                continue
 
-        if has_openai:
+    if has_openai:
+        try:
             url = f"{OPENAI_BASE_URL.rstrip('/')}/chat/completions"
             headers = {
                 "Authorization": f"Bearer {OPENAI_API_KEY}",
@@ -140,22 +170,22 @@ def _call_llm_agent(
             }
             payload = {
                 "model": OPENAI_MODEL,
-                "temperature": 0.2,
+                "temperature": 0.35,
                 "response_format": {"type": "json_object"},
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
             }
-            resp = requests.post(url, headers=headers, json=payload, timeout=10)
+            resp = requests.post(url, headers=headers, json=payload, timeout=12)
             resp.raise_for_status()
             raw_text = resp.json()["choices"][0]["message"]["content"]
             parsed = json.loads(raw_text)
-            parsed["_provider"] = f"openai:{OPENAI_MODEL}"
+            parsed["_provider"] = f"OpenAI ({OPENAI_MODEL})"
             return parsed
-    except Exception as exc:
-        print(f"[FacturaBot AI] Fallback a motor NLU local ({exc})")
-        return None
+        except Exception as exc:
+            print(f"[FacturaBot AI] Fallback a motor NLU local ({exc})")
+
     return None
 
 
@@ -164,29 +194,29 @@ def agent_reply(
     client: str = 'Cliente',
     amount: float = 0.0,
     lang: str | None = None,
+    due_date: str = '',
+    invoice_id: str = '',
     history: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Analiza el mensaje del cliente y genera la respuesta de FacturaBot.
-
-    Regresa un diccionario con:
-      - message: texto de respuesta del bot
-      - new_status: nuevo estado de la factura ('Paid', 'Partial Plan', None)
-      - hitl_proposal: dict con propuesta para Human-In-The-Loop o None
-      - show_paypal_btn: bool indicando si mostrar el botón [ Pagar con PayPal ]
-      - paypal_amount: monto sugerido para el botón de PayPal
-      - intent: intención detectada
-      - ai_provider: motor de IA utilizado
-    """
+    """Analiza el mensaje del cliente con Gemini 3.5 Flash y genera la respuesta y acciones de FacturaBot."""
     detected_lang = _detect_language(text, default_lang=lang or 'es')
 
-    # Intentar primero con LLM real (Gemini / OpenAI) si hay API key configurada
-    llm_res = _call_llm_agent(text, client=client, amount=amount, lang=detected_lang, history=history)
+    llm_res = _call_llm_agent(
+        text,
+        client=client,
+        amount=amount,
+        lang=detected_lang,
+        due_date=due_date,
+        invoice_id=invoice_id,
+        history=history,
+    )
     if llm_res and isinstance(llm_res, dict) and llm_res.get('message'):
         trigger_hitl = bool(llm_res.get('trigger_hitl'))
         mark_paid = bool(llm_res.get('mark_paid'))
         installments = max(2, int(llm_res.get('installments') or _extract_installments(text)))
         return {
             'message': str(llm_res['message']),
+            'reasoning': str(llm_res.get('reasoning') or ''),
             'new_status': 'Paid' if mark_paid else None,
             'hitl_proposal': (
                 {
@@ -199,15 +229,14 @@ def agent_reply(
             ),
             'show_paypal_btn': bool(llm_res.get('show_paypal_btn', not trigger_hitl and not mark_paid)),
             'paypal_amount': 0.0 if mark_paid else amount,
-            'intent': llm_res.get('intent', 'GENERAL'),
+            'intent': llm_res.get('intent', 'NEGOTIATION_OR_QUESTION'),
             'ai_provider': llm_res.get('_provider', get_active_ai_provider()),
         }
 
-    # Motor NLU determinista bilingüe (ES / EN)
+    # Motor NLU determinista bilingüe (ES / EN) sólo si no hay conexión a internet
     t = text.lower()
     is_en = detected_lang == 'en'
 
-    # 1. Solicitud de pago en partes / plan de pagos -> Activa Human-In-The-Loop
     plan_keywords = (
         'parte', 'parcial', 'plan', 'cuota', 'mitad', 'plazo',
         'no tengo el total', 'no cuento con el total', '2 pagos', 'dos pagos',
@@ -225,6 +254,7 @@ def agent_reply(
                 f'{monto_txt} and escalated it to Human-In-The-Loop supervision to authorize '
                 f'partial payments on your PayPal Invoice.'
             )
+            reasoning = f'Client requested {num_payments} installments (${installment:,.2f}/each); escalating to HITL.'
         else:
             monto_txt = f' (${installment:,.2f} por pago)' if installment else ''
             msg = (
@@ -232,8 +262,10 @@ def agent_reply(
                 f'{num_payments} pagos{monto_txt} y la envié a supervisión '
                 f'(Human-In-The-Loop) para autorizarla en PayPal.'
             )
+            reasoning = f'Cliente solicita diferir en {num_payments} pagos (${installment:,.2f} c/u); requiere autorización HITL.'
         return {
             'message': msg,
+            'reasoning': reasoning,
             'new_status': None,
             'hitl_proposal': {
                 'client': client,
@@ -246,7 +278,6 @@ def agent_reply(
             'ai_provider': get_active_ai_provider(),
         }
 
-    # 2. Confirmación de pago realizado
     paid_keywords = (
         'pagu', 'pagado', 'transfer', 'listo', 'comprobante', 'deposit', 'liquid',
         'i paid', 'already paid', 'just paid', 'payment sent', 'completed payment',
@@ -261,6 +292,7 @@ def agent_reply(
         )
         return {
             'message': msg,
+            'reasoning': 'Payment confirmation detected; updating ledger status to Paid.' if is_en else 'Confirmación de liquidación detectada; actualizando estado a Paid.',
             'new_status': 'Paid',
             'hitl_proposal': None,
             'show_paypal_btn': False,
@@ -269,54 +301,6 @@ def agent_reply(
             'ai_provider': get_active_ai_provider(),
         }
 
-    # 3. Promesa de pago en fecha próxima
-    promise_keywords = (
-        'mañana', 'semana', 'viernes', 'lunes', 'martes', 'jueves', 'quincena', 'fin de mes', 'día',
-        'tomorrow', 'next week', 'friday', 'monday', 'tuesday', 'thursday', 'end of month',
-    )
-    if any(k in t for k in promise_keywords):
-        msg = (
-            f'Perfect, {client}. I have logged your payment commitment in the system. '
-            f'Here is your direct PayPal Invoicing checkout link for when you complete the transaction:'
-            if is_en
-            else f'Perfecto, {client}. Registré su compromiso de pago en el sistema. '
-            f'Le comparto el enlace directo de PayPal para cuando realice la transacción:'
-        )
-        return {
-            'message': msg,
-            'new_status': None,
-            'hitl_proposal': None,
-            'show_paypal_btn': True,
-            'paypal_amount': amount,
-            'intent': 'PROMISE_TO_PAY',
-            'ai_provider': get_active_ai_provider(),
-        }
-
-    # 4. Consulta de saldo, factura o link de pago
-    info_keywords = (
-        'cuánto', 'cuanto', 'monto', 'saldo', 'link', 'liga', 'paypal', 'factura', 'debo',
-        'how much', 'balance', 'amount', 'invoice', 'owe', 'checkout',
-    )
-    if any(k in t for k in info_keywords):
-        monto_str = f'${amount:,.2f} USD' if amount else ('pending' if is_en else 'pendiente')
-        msg = (
-            f'Hello {client}, your current invoice balance is {monto_str}. '
-            f'You can pay it in full right away via PayPal or request an installment payment plan:'
-            if is_en
-            else f'Hola {client}, el saldo actual de su factura es de {monto_str}. '
-            f'Puede liquidarla directamente con PayPal o solicitar un plan de pagos:'
-        )
-        return {
-            'message': msg,
-            'new_status': None,
-            'hitl_proposal': None,
-            'show_paypal_btn': True,
-            'paypal_amount': amount,
-            'intent': 'BALANCE_INQUIRY',
-            'ai_provider': get_active_ai_provider(),
-        }
-
-    # 5. Respuesta por defecto con opción de pago o convenio
     msg = (
         f'Thank you for reaching out, {client}. Would you like to settle the outstanding balance '
         f'(${amount:,.2f} USD) now with PayPal, or would you prefer to request a partial payment plan?'
@@ -326,6 +310,7 @@ def agent_reply(
     )
     return {
         'message': msg,
+        'reasoning': 'General inquiry; providing PayPal checkout and installment options.' if is_en else 'Consulta general de cobranza; ofreciendo enlace PayPal o convenio.',
         'new_status': None,
         'hitl_proposal': None,
         'show_paypal_btn': True,
