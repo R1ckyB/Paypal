@@ -64,11 +64,16 @@ def get_invoices():
 @app.post("/api/agent/chat")
 def api_agent_chat(payload: AgentChatRequest):
     """Endpoint REST para interactuar con el agente de IA de cobranza."""
+    from app.services.invoice_service import get_invoice_by_client_or_id
+    inv = get_invoice_by_client_or_id(payload.client) or {}
     res = agent_reply(
         text=payload.message,
         client=payload.client,
-        amount=payload.amount,
+        amount=float(inv.get("amount") or payload.amount),
         lang=payload.lang,
+        due_date=inv.get("due_date", ""),
+        invoice_id=inv.get("id", "INV-2026-001"),
+        invoice_status=inv.get("status", "Overdue"),
     )
     if res.get("hitl_proposal"):
         prop = res["hitl_proposal"]
