@@ -19,6 +19,7 @@ class ClientInbox:
         self.current_amount = 8200.0
         self.current_invoice_id = 'INV-2026-001'
         self.current_due_date = '2026-09-15'
+        self.current_status = 'Overdue'
         self.view_mode = 'chat'  # 'chat' o 'email'
 
         self.histories = self._initial_histories()
@@ -285,6 +286,7 @@ class ClientInbox:
             lang=self.lang,
             due_date=self.current_due_date,
             invoice_id=self.current_invoice_id,
+            invoice_status=self.current_status,
             history=history[:-1],
         )
         self.is_thinking = False

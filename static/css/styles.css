@@ -47,6 +47,7 @@ html, body {
   padding: 18px 22px;
   border-right: 1px solid #1E293B;
   background: #0B0E14;
+  overflow-y: auto;
 }
 
 .fb-right-panel {

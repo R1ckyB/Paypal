@@ -1,12 +1,13 @@
 """Servicio de Agente de IA para Cobranza B2B con PayPal Invoicing y Human-In-The-Loop.
 
-Soporta:
-1. Google Gemini API (gemini-3.5-flash / gemini-3.5-flash-lite) con Structured JSON Output.
-2. OpenAI / Compatible API con Structured JSON Output.
-3. Motor NLU determinista bilingüe (ES/EN) como fallback en caso de falta de red.
+Incluye:
+- Guardrails estrictos de dominio financiero (rechaza cualquier tema ajeno a cobranza/PayPal).
+- Reglas de política crediticia B2B (máximo 6 cuotas, cuota mínima $1,000 USD, sin descuentos arbitrarios).
+- Verificación anti-fraude (no marca una factura como Paid solo porque el usuario diga 'ya pagué' en texto).
 """
 import json
 import re
+from datetime import datetime, timezone
 from typing import Any
 import requests
 
@@ -25,6 +26,9 @@ PLACEHOLDER_KEYS = {
     'changeme',
 }
 
+MAX_ALLOWED_INSTALLMENTS = 6
+MIN_INSTALLMENT_USD = 1000.0
+
 
 def get_active_ai_provider() -> str:
     """Devuelve el nombre del motor de IA activo para mostrar en diagnósticos y UI."""
@@ -32,7 +36,7 @@ def get_active_ai_provider() -> str:
         return f'Google Gemini ({GEMINI_MODEL})'
     if OPENAI_API_KEY and OPENAI_API_KEY not in PLACEHOLDER_KEYS:
         return f'OpenAI ({OPENAI_MODEL})'
-    return 'FacturaBot Hybrid NLU + Rules Engine (Bilingual ES/EN)'
+    return 'FacturaBot Financial Policy Engine (Bilingual ES/EN)'
 
 
 def _detect_language(text: str, default_lang: str = 'es') -> str:
@@ -56,8 +60,8 @@ def _detect_language(text: str, default_lang: str = 'es') -> str:
     return default_lang if default_lang in ('es', 'en') else 'es'
 
 
-def _extract_installments(text: str) -> int:
-    """Extrae el número de pagos solicitados por el cliente (entre 2 y 6)."""
+def _extract_requested_installments(text: str) -> int:
+    """Extrae el número de pagos solicitados por el cliente (incluso si excede el máximo para poder contraofertar)."""
     t = text.lower()
     word_map = {
         'two': 2, 'dos': 2, 'mitad': 2, 'half': 2,
@@ -65,18 +69,37 @@ def _extract_installments(text: str) -> int:
         'four': 4, 'cuatro': 4,
         'five': 5, 'cinco': 5,
         'six': 6, 'seis': 6,
+        'seven': 7, 'siete': 7,
+        'eight': 8, 'ocho': 8,
+        'ten': 10, 'diez': 10,
+        'twelve': 12, 'doce': 12,
     }
+    match = re.search(r'\b(\d{1,3})\s*(?:pagos?|partes?|cuotas?|payments?|installments?|parts?|meses|quincenas)\b', t)
+    if match:
+        return max(1, int(match.group(1)))
     for word, val in word_map.items():
         if re.search(rf'\b{word}\b', t):
             return val
-    match = re.search(r'\b([2-6])\s*(?:pagos?|partes?|cuotas?|payments?|installments?|parts?|meses|quincenas)\b', t)
-    if match:
-        return int(match.group(1))
     if '3' in t:
         return 3
     if '4' in t:
         return 4
     return 2
+
+
+def _days_overdue_info(due_date_str: str) -> str:
+    """Calcula cuántos días de vencimiento o plazo tiene la factura."""
+    if not due_date_str:
+        return 'Unknown due date'
+    try:
+        due_dt = datetime.strptime(due_date_str, '%Y-%m-%d').replace(tzinfo=timezone.utc)
+        now_dt = datetime.now(timezone.utc)
+        delta = (now_dt - due_dt).days
+        if delta > 0:
+            return f'{delta} days OVERDUE (since {due_date_str})'
+        return f'Due in {abs(delta)} days ({due_date_str})'
+    except Exception:
+        return due_date_str
 
 
 def _call_llm_agent(
@@ -86,54 +109,59 @@ def _call_llm_agent(
     lang: str,
     due_date: str = '',
     invoice_id: str = '',
+    invoice_status: str = 'Overdue',
     history: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
-    """Invoca a Gemini 3.5 Flash (o fallback 3.5-flash-lite / OpenAI) para razonar y negociar con el cliente."""
+    """Invoca a Gemini 3.5 Flash con Guardrails estrictos de cobranza B2B y políticas de PayPal."""
     has_gemini = bool(GEMINI_API_KEY and GEMINI_API_KEY not in PLACEHOLDER_KEYS)
     has_openai = bool(OPENAI_API_KEY and OPENAI_API_KEY not in PLACEHOLDER_KEYS)
     if not has_gemini and not has_openai:
         return None
 
     lang_name = 'English' if lang == 'en' else 'Spanish'
+    overdue_desc = _days_overdue_info(due_date)
+    max_by_min_amount = max(2, min(MAX_ALLOWED_INSTALLMENTS, int(amount // MIN_INSTALLMENT_USD) or 2))
+
     recent_context = ''
     if history:
         turns = history[-6:]
         recent_context = '\n'.join(f"- {m.get('sender', 'user')}: {m.get('text', '')}" for m in turns)
 
     system_prompt = (
-        "You are FacturaBot, an intelligent, empathetic B2B Accounts Receivable & Collections AI Agent "
-        "powered by PayPal Invoicing v2 API and a Human-In-The-Loop (HITL) supervisor credit workflow.\n"
+        "You are FacturaBot, a strict, specialized B2B Accounts Receivable & Collections AI Agent "
+        "operating exclusively on the PayPal Invoicing v2 Platform.\n\n"
+        "=== LIVE INVOICE LEDGER DATA ===\n"
         f"- Client Company: {client}\n"
-        f"- Invoice ID: {invoice_id or 'INV-2026'}\n"
-        f"- Invoice Due Date: {due_date or '2026-09-30'}\n"
+        f"- PayPal Invoice ID: {invoice_id or 'INV-2026-001'}\n"
+        f"- Current Ledger Status: {invoice_status}\n"
+        f"- Aging / Due Status: {overdue_desc}\n"
         f"- Outstanding Balance: ${amount:,.2f} USD\n"
-        f"- Preferred Language: {lang_name} (always reply in the language the client used in their last message).\n\n"
-        "BEHAVIOR GUIDELINES:\n"
-        "1. Think carefully about what the client is actually saying or asking. Respond naturally and specifically to their situation (never sound like a rigid template).\n"
-        "2. If the client asks to split the payment, pay in installments/parts, or says they only have part of the money right now:\n"
-        "   - Calculate the exact installment amount ($amount / installments).\n"
-        "   - Set `trigger_hitl: true` and `installments` to the number of payments requested (2 to 6, default 2).\n"
-        "   - Explain warmly that you have structured the plan and sent it to the Human-In-The-Loop supervisor to enable `allow_partial_payment` on their PayPal Invoice.\n"
-        "   - Set `show_paypal_btn: false` while waiting for human approval.\n"
-        "3. If the client confirms they already paid or sent the transfer:\n"
-        "   - Set `mark_paid: true` and `show_paypal_btn: false`, and thank them warmly.\n"
-        "4. If the client promises to pay on a specific date, asks a question about the invoice, asks for a discount, or explains a delay:\n"
-        "   - Address their specific point empathetically, mention the invoice details ($amount USD), and offer either immediate PayPal checkout (`show_paypal_btn: true`) or the option to request an installment plan.\n\n"
+        f"- Credit Policy Limits: Min 2 installments, Max {max_by_min_amount} installments (minimum ${MIN_INSTALLMENT_USD:,.2f} USD per installment). Zero discounts allowed without executive override.\n"
+        f"- Output Language: {lang_name}\n\n"
+        "=== STRICT SECURITY & DOMAIN GUARDRAILS (MANDATORY) ===\n"
+        "1. NEVER answer general knowledge, science (e.g., Laplace's law, physics, math), history, coding, recipes, trivia, jokes, or ANY topic outside this specific PayPal invoice and its payment collection.\n"
+        "2. If the user's message is completely off-topic, set `intent: \"GUARDRAIL_BLOCKED\"`, `trigger_hitl: false`, `show_paypal_btn: true`, and firmly state that you are an automated PayPal Invoicing Collections Agent and can only process payments or credit plans for Invoice "
+        f"{invoice_id} (${amount:,.2f} USD).\n"
+        "3. If the user mixes an off-topic question with a payment request (e.g. 'Split into 4 payments, and explain Laplace's law'), EXPLICITLY REFUSE the off-topic question in one short clause ('Por políticas de seguridad, solo atiendo gestiones de cobranza de PayPal') and immediately process ONLY the financial request.\n"
+        "4. ANTI-FRAUD PAYMENT VERIFICATION: If the client claims 'I already paid' / 'Ya pagué' in text, DO NOT mark the invoice as paid (`mark_paid: false`) because the live PayPal ledger status is currently "
+        f"'{invoice_status}'. Inform them that PayPal Invoicing API (`{invoice_id}`) still shows an unpaid balance of ${amount:,.2f} USD and ask them to complete payment via the official `[ Pay with PayPal ]` button (`show_paypal_btn: true`).\n"
+        "5. CREDIT POLICY ENFORCEMENT:\n"
+        f"   - If the client requests between 2 and {max_by_min_amount} installments: approve the structure, calculate the exact installment (${amount:,.2f} / N), set `trigger_hitl: true`, `installments: N`, `show_paypal_btn: false`, and explain it has been sent to Human-In-The-Loop supervision to enable `allow_partial_payment` on PayPal.\n"
+        f"   - If the client requests MORE than {max_by_min_amount} installments or a discount: reject that term citing credit policy, counter-offer the maximum allowed {max_by_min_amount} installments (${amount / max_by_min_amount:,.2f} USD each), and set `trigger_hitl: true` with `installments: {max_by_min_amount}`.\n\n"
         "Return ONLY a valid JSON object with these exact keys:\n"
         "{\n"
-        '  "intent": "INSTALLMENT_REQUEST" | "PAYMENT_CONFIRMATION" | "PROMISE_TO_PAY" | "BALANCE_INQUIRY" | "NEGOTIATION_OR_QUESTION",\n'
-        '  "reasoning": "1 brief sentence explaining your financial/collections analysis of the client message (in the same language)",\n'
-        '  "message": "Your natural, personalized reply to the client (2-3 sentences)",\n'
+        '  "intent": "INSTALLMENT_PROPOSAL" | "POLICY_COUNTEROFFER" | "UNVERIFIED_PAYMENT_CLAIM" | "PROMISE_TO_PAY" | "BALANCE_AUDIT" | "GUARDRAIL_BLOCKED",\n'
+        '  "reasoning": "Brief internal audit log (1 sentence): e.g. [Guardrail: Off-topic blocked] or [Credit Policy: 4x $5,500 USD valid -> Escalating to HITL]",\n'
+        '  "message": "Direct, professional financial collection response (2-3 sentences max, strictly focused on the invoice)",\n'
         '  "installments": 2,\n'
         '  "trigger_hitl": false,\n'
         '  "mark_paid": false,\n'
         '  "show_paypal_btn": true\n'
         "}"
     )
-    user_prompt = f"Conversation history:\n{recent_context}\n\nClient's latest message: \"{text}\""
+    user_prompt = f"Conversation history:\n{recent_context}\n\nClient message: \"{text}\""
 
     if has_gemini:
-        # Probar el modelo configurado y respaldos rápidos de la familia Gemini 3.x
         candidate_models = [GEMINI_MODEL, 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite']
         seen = set()
         for model_name in candidate_models:
@@ -146,7 +174,7 @@ def _call_llm_agent(
                     "systemInstruction": {"parts": [{"text": system_prompt}]},
                     "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
                     "generationConfig": {
-                        "temperature": 0.35,
+                        "temperature": 0.15,
                         "responseMimeType": "application/json",
                     },
                 }
@@ -170,7 +198,7 @@ def _call_llm_agent(
             }
             payload = {
                 "model": OPENAI_MODEL,
-                "temperature": 0.35,
+                "temperature": 0.15,
                 "response_format": {"type": "json_object"},
                 "messages": [
                     {"role": "system", "content": system_prompt},
@@ -184,7 +212,7 @@ def _call_llm_agent(
             parsed["_provider"] = f"OpenAI ({OPENAI_MODEL})"
             return parsed
         except Exception as exc:
-            print(f"[FacturaBot AI] Fallback a motor NLU local ({exc})")
+            print(f"[FacturaBot AI] Fallback a motor financiero local ({exc})")
 
     return None
 
@@ -196,10 +224,12 @@ def agent_reply(
     lang: str | None = None,
     due_date: str = '',
     invoice_id: str = '',
+    invoice_status: str = 'Overdue',
     history: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Analiza el mensaje del cliente con Gemini 3.5 Flash y genera la respuesta y acciones de FacturaBot."""
+    """Analiza el mensaje del cliente aplicando Guardrails financieros y políticas de PayPal Invoicing."""
     detected_lang = _detect_language(text, default_lang=lang or 'es')
+    max_by_min_amount = max(2, min(MAX_ALLOWED_INSTALLMENTS, int(amount // MIN_INSTALLMENT_USD) or 2))
 
     llm_res = _call_llm_agent(
         text,
@@ -208,16 +238,17 @@ def agent_reply(
         lang=detected_lang,
         due_date=due_date,
         invoice_id=invoice_id,
+        invoice_status=invoice_status,
         history=history,
     )
     if llm_res and isinstance(llm_res, dict) and llm_res.get('message'):
         trigger_hitl = bool(llm_res.get('trigger_hitl'))
-        mark_paid = bool(llm_res.get('mark_paid'))
-        installments = max(2, int(llm_res.get('installments') or _extract_installments(text)))
+        raw_inst = int(llm_res.get('installments') or _extract_requested_installments(text))
+        installments = max(2, min(max_by_min_amount, raw_inst))
         return {
             'message': str(llm_res['message']),
             'reasoning': str(llm_res.get('reasoning') or ''),
-            'new_status': 'Paid' if mark_paid else None,
+            'new_status': None,  # Nunca marcar Paid solo por texto sin verificación real de PayPal
             'hitl_proposal': (
                 {
                     'client': client,
@@ -227,42 +258,40 @@ def agent_reply(
                 if trigger_hitl
                 else None
             ),
-            'show_paypal_btn': bool(llm_res.get('show_paypal_btn', not trigger_hitl and not mark_paid)),
-            'paypal_amount': 0.0 if mark_paid else amount,
-            'intent': llm_res.get('intent', 'NEGOTIATION_OR_QUESTION'),
+            'show_paypal_btn': bool(llm_res.get('show_paypal_btn', not trigger_hitl)),
+            'paypal_amount': amount,
+            'intent': llm_res.get('intent', 'BALANCE_AUDIT'),
             'ai_provider': llm_res.get('_provider', get_active_ai_provider()),
         }
 
-    # Motor NLU determinista bilingüe (ES / EN) sólo si no hay conexión a internet
+    # Motor de respaldo con Guardrails estrictos
     t = text.lower()
     is_en = detected_lang == 'en'
 
     plan_keywords = (
         'parte', 'parcial', 'plan', 'cuota', 'mitad', 'plazo',
-        'no tengo el total', 'no cuento con el total', '2 pagos', 'dos pagos',
-        'dividir', 'abono', 'abonar',
-        'split', 'installment', 'partial', 'parts', 'half', 'two payments',
-        "don't have the full", 'cannot pay the full', "can't pay all",
+        'no tengo el total', 'no cuento con el total', 'pagos',
+        'dividir', 'abono', 'abonar', 'meses', 'quincenas',
+        'split', 'installment', 'partial', 'parts', 'half', 'payments',
     )
     if any(k in t for k in plan_keywords):
-        num_payments = _extract_installments(text)
+        req_payments = _extract_requested_installments(text)
+        num_payments = max(2, min(max_by_min_amount, req_payments))
         installment = (amount / num_payments) if amount else 0
         if is_en:
-            monto_txt = f' (${installment:,.2f} USD per payment)' if installment else ''
             msg = (
-                f'Understood, {client}. I have structured a {num_payments}-installment payment plan'
-                f'{monto_txt} and escalated it to Human-In-The-Loop supervision to authorize '
-                f'partial payments on your PayPal Invoice.'
+                f'As PayPal Invoicing Collections Agent for {client} (Invoice {invoice_id}, ${amount:,.2f} USD), '
+                f'I have structured a {num_payments}-installment plan of ${installment:,.2f} USD per payment '
+                f'and escalated it to Human-In-The-Loop supervision for PayPal authorization.'
             )
-            reasoning = f'Client requested {num_payments} installments (${installment:,.2f}/each); escalating to HITL.'
+            reasoning = f'[Credit Policy] {num_payments}x ${installment:,.2f} USD validated -> Escalated to HITL.'
         else:
-            monto_txt = f' (${installment:,.2f} por pago)' if installment else ''
             msg = (
-                f'Entendido, {client}. He generado una solicitud de plan de '
-                f'{num_payments} pagos{monto_txt} y la envié a supervisión '
-                f'(Human-In-The-Loop) para autorizarla en PayPal.'
+                f'En relación exclusiva a su factura {invoice_id} (${amount:,.2f} USD), he estructurado '
+                f'un plan de {num_payments} cuotas de ${installment:,.2f} USD c/u y lo envié a supervisión '
+                f'(Human-In-The-Loop) para habilitar el pago parcial en PayPal.'
             )
-            reasoning = f'Cliente solicita diferir en {num_payments} pagos (${installment:,.2f} c/u); requiere autorización HITL.'
+            reasoning = f'[Política de Crédito] {num_payments}x ${installment:,.2f} USD validado -> Escalado a HITL.'
         return {
             'message': msg,
             'reasoning': reasoning,
@@ -274,47 +303,51 @@ def agent_reply(
             },
             'show_paypal_btn': False,
             'paypal_amount': amount,
-            'intent': 'INSTALLMENT_REQUEST',
+            'intent': 'INSTALLMENT_PROPOSAL',
             'ai_provider': get_active_ai_provider(),
         }
 
     paid_keywords = (
         'pagu', 'pagado', 'transfer', 'listo', 'comprobante', 'deposit', 'liquid',
-        'i paid', 'already paid', 'just paid', 'payment sent', 'completed payment',
+        'i paid', 'already paid', 'just paid', 'payment sent',
     )
     if any(k in t for k in paid_keywords):
         msg = (
-            f'Thank you, {client}! We have verified and recorded your payment in PayPal Invoicing. '
-            f'Your invoice status is now marked as Paid.'
+            f'We audited Invoice {invoice_id} in PayPal Sandbox and it still shows an unpaid balance '
+            f'of ${amount:,.2f} USD ({invoice_status}). Please complete the payment using the official '
+            f'PayPal Checkout button below so the webhook reconciles your account:'
             if is_en
-            else f'¡Excelente, {client}! Hemos verificado y registrado su pago en PayPal. '
-            f'Su factura ha quedado marcada como Pagada (Paid).'
+            else f'He consultado en vivo la factura {invoice_id} en PayPal Invoicing y aún registra '
+            f'un saldo pendiente de ${amount:,.2f} USD ({invoice_status}). Por favor realice el pago '
+            f'mediante el botón oficial de PayPal a continuación para acreditarlo:'
         )
         return {
             'message': msg,
-            'reasoning': 'Payment confirmation detected; updating ledger status to Paid.' if is_en else 'Confirmación de liquidación detectada; actualizando estado a Paid.',
-            'new_status': 'Paid',
+            'reasoning': f'[Auditoría PayPal] Reclamo de pago no verificado en ledger ({invoice_status}).',
+            'new_status': None,
             'hitl_proposal': None,
-            'show_paypal_btn': False,
-            'paypal_amount': 0.0,
-            'intent': 'PAYMENT_CONFIRMATION',
+            'show_paypal_btn': True,
+            'paypal_amount': amount,
+            'intent': 'UNVERIFIED_PAYMENT_CLAIM',
             'ai_provider': get_active_ai_provider(),
         }
 
     msg = (
-        f'Thank you for reaching out, {client}. Would you like to settle the outstanding balance '
-        f'(${amount:,.2f} USD) now with PayPal, or would you prefer to request a partial payment plan?'
+        f'I am FacturaBot, an automated PayPal Invoicing Collections Agent. I can only assist with '
+        f'Invoice {invoice_id} for {client} (Balance: ${amount:,.2f} USD, Due: {due_date}). '
+        f'Would you like to pay in full via PayPal now or request a 2-to-{max_by_min_amount} installment plan?'
         if is_en
-        else f'Gracias por escribirnos, {client}. ¿Desea liquidar el saldo pendiente ahora '
-        f'con PayPal o prefiere que evaluemos un plan de pagos en parcialidades?'
+        else f'Soy el Agente de Cobranza de PayPal Invoicing y únicamente gestiono la factura '
+        f'{invoice_id} de {client} (Saldo: ${amount:,.2f} USD, Vencimiento: {due_date}). '
+        f'¿Desea liquidar el total ahora con PayPal o solicitar un plan de 2 a {max_by_min_amount} pagos?'
     )
     return {
         'message': msg,
-        'reasoning': 'General inquiry; providing PayPal checkout and installment options.' if is_en else 'Consulta general de cobranza; ofreciendo enlace PayPal o convenio.',
+        'reasoning': '[Guardrail Financiero] Respuesta restringida estrictamente al cobro de la factura.',
         'new_status': None,
         'hitl_proposal': None,
         'show_paypal_btn': True,
         'paypal_amount': amount,
-        'intent': 'GENERAL',
+        'intent': 'GUARDRAIL_BLOCKED',
         'ai_provider': get_active_ai_provider(),
     }
