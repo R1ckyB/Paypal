@@ -6,7 +6,7 @@
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
-    { "key": "backend_url", "value": "http://localhost:8080" },
+    { "key": "backend_url", "value": "https://paypal-prueba.onrender.com" },
     { "key": "paypal_base_url", "value": "https://api-m.sandbox.paypal.com" },
     { "key": "client_id", "value": "" },
     { "key": "client_secret", "value": "" },
